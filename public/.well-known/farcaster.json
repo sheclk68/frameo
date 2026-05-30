@@ -1,0 +1,18 @@
+{
+  "accountAssociation": {
+    "header": "eyJmaWQiOjQ4MTQ5OCwidHlwZSI6ImN1c3RvZHkiLCJrZXkiOiIweDFjMTgyMjQzMjI4ODdGRDg2YTI2N0VEYkQxRDJCRTlBQzczNzlBNTAifQ",
+    "payload": "eyJkb21haW4iOiJteS1mcmFtZS5zaGVjbGswMDY4LndvcmtlcnMuZGV2In0",
+    "signature": "O0Vs67kBYVBPd4d7mO5Jch3XjX8JjVscYPGYshQVK1QjO+e4pvmBGDxMmmRuqoo65v9rnsq4qNsuIIwkTMpqoRw="
+  },
+  "frame": {
+    "version": "1",
+    "name": "FrameOS",
+    "iconUrl": "https://my-frame.sheclk0068.workers.dev/icon.png",
+    "homeUrl": "https://my-frame.sheclk0068.workers.dev",
+    "imageUrl": "https://my-frame.sheclk0068.workers.dev/og.png",
+    "buttonTitle": "Launch FrameOS",
+    "splashImageUrl": "https://my-frame.sheclk0068.workers.dev/splash.png",
+    "splashBackgroundColor": "#0d0d12",
+    "webhookUrl": "https://my-frame.sheclk0068.workers.dev/api/webhook"
+  }
+}
