@@ -5,8 +5,6 @@ import {
   VersionedTransaction,
 } from "@solana/web3.js";
 
-const JUPITER_SWAP_API_URL = "https://quote-api.jup.ag/v6/swap"; // direct — falls back gracefully
-
 // ===== Solana Fallback Pricing =====
 
 const SOLANA_PRICE_FEEDS: Record<string, number> = {
@@ -144,27 +142,32 @@ export interface SolanaSwapQuote {
 
 /**
  * Fetch a swap quote from Jupiter v6 API.
- * Direct browser call — if CORS allows, it works. If not, falls through
- * to getSolanaQuote's fallback pricing.
+ * Strategy: direct browser call first; if blocked (SOCKS/VPN/CORS), try Vercel proxy.
  */
 export async function getJupiterQuote(
   params: JupiterQuoteParams
 ): Promise<JupiterQuoteResponse> {
-  const url = new URL("https://quote-api.jup.ag/v6/quote");
-  url.searchParams.set("inputMint", params.inputMint);
-  url.searchParams.set("outputMint", params.outputMint);
-  url.searchParams.set("amount", String(params.amount));
-  url.searchParams.set("slippageBps", String(params.slippageBps ?? 50));
-  url.searchParams.set("swapMode", params.swapMode ?? "ExactIn");
+  const queryString = `inputMint=${encodeURIComponent(params.inputMint)}&outputMint=${encodeURIComponent(params.outputMint)}&amount=${params.amount}&slippageBps=${params.slippageBps ?? 50}&swapMode=${params.swapMode ?? "ExactIn"}`;
 
-  const res = await fetch(url.toString());
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Jupiter API error (${res.status}): ${text.slice(0, 200)}`);
+  // Try 1: Direct from browser (fast path)
+  try {
+    const directUrl = `https://quote-api.jup.ag/v6/quote?${queryString}`;
+    const directRes = await fetch(directUrl, { signal: AbortSignal.timeout(5000) });
+    if (directRes.ok) return directRes.json();
+  } catch {
+    // Blocked by SOCKS/VPN/CORS — try proxy
   }
 
-  return res.json();
+  // Try 2: Via Vercel proxy (bypasses client-side network restrictions)
+  const proxyUrl = `/api/jupiter-quote?${queryString}`;
+  const proxyRes = await fetch(proxyUrl, { signal: AbortSignal.timeout(10000) });
+
+  if (!proxyRes.ok) {
+    const text = await proxyRes.text();
+    throw new Error(`Jupiter API unreachable (direct blocked, proxy ${proxyRes.status})`);
+  }
+
+  return proxyRes.json();
 }
 
 /**
@@ -207,12 +210,26 @@ export async function getSolanaQuote(params: {
 
 /**
  * Get a swap transaction from Jupiter v6 (returns base64-encoded VersionedTransaction)
- * Uses local proxy to avoid CORS issues
+ * Direct call first, proxy fallback (bypasses SOCKS/VPN restrictions)
  */
 export async function getJupiterSwapTransaction(
   params: JupiterSwapRequest
 ): Promise<JupiterSwapResponse> {
-  const res = await fetch(JUPITER_SWAP_API_URL, {
+  // Try 1: Direct
+  try {
+    const directRes = await fetch("https://quote-api.jup.ag/v6/swap", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (directRes.ok) return directRes.json();
+  } catch {
+    // Blocked — try proxy
+  }
+
+  // Try 2: Via Vercel proxy
+  const res = await fetch("/api/jupiter-swap", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
