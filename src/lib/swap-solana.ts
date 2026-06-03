@@ -144,26 +144,34 @@ export interface SolanaSwapQuote {
 
 /**
  * Fetch a swap quote from Jupiter v6 API
- * Uses local Next.js proxy to avoid CORS issues
+ * Strategy: direct browser fetch first (CORS may allow), then proxy as backup
  */
 export async function getJupiterQuote(
   params: JupiterQuoteParams
 ): Promise<JupiterQuoteResponse> {
-  const url = new URL("/api/jupiter-quote", window.location.origin);
-  url.searchParams.set("inputMint", params.inputMint);
-  url.searchParams.set("outputMint", params.outputMint);
-  url.searchParams.set("amount", String(params.amount));
-  url.searchParams.set("slippageBps", String(params.slippageBps ?? 50));
-  url.searchParams.set("swapMode", params.swapMode ?? "ExactIn");
+  const queryString = `inputMint=${encodeURIComponent(params.inputMint)}&outputMint=${encodeURIComponent(params.outputMint)}&amount=${params.amount}&slippageBps=${params.slippageBps ?? 50}&swapMode=${params.swapMode ?? "ExactIn"}`;
 
-  const res = await fetch(url.toString());
-
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Jupiter quote failed (${res.status}): ${text.slice(0, 200)}`);
+  // Try 1: Direct from browser (faster, works if CORS allows)
+  const directUrl = `https://quote-api.jup.ag/v6/quote?${queryString}`;
+  try {
+    const directRes = await fetch(directUrl, { signal: AbortSignal.timeout(5000) });
+    if (directRes.ok) return directRes.json();
+  } catch {
+    // CORS or network error — fall through to proxy
   }
 
-  return res.json();
+  // Try 2: Via local Next.js proxy (works in same-origin, no CORS)
+  try {
+    const proxyUrl = `/api/jupiter-quote?${queryString}`;
+    const proxyRes = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
+    if (proxyRes.ok) return proxyRes.json();
+
+    const text = await proxyRes.text();
+    throw new Error(`Jupiter proxy error (${proxyRes.status}): ${text.slice(0, 200)}`);
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("Jupiter proxy")) throw err;
+    throw new Error("Jupiter API unreachable");
+  }
 }
 
 /**

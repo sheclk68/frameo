@@ -21,6 +21,7 @@ import {
 import { useWalletManager } from "@/hooks/useWalletManager";
 import {
   getSolanaQuote,
+  getJupiterQuote,
   getJupiterSwapTransaction,
   signAndSendSolanaSwap,
   waitForSolanaTx,
@@ -250,20 +251,11 @@ export default function SwapPage() {
       if (!solanaQuote || !solanaWallet.publicKey || !solanaWallet.connection) return;
 
       setStep("swapping");
-      setMessage("");
-
-      // Guard: can't execute swap with a fallback/estimated quote
-      if (solanaQuote.isFallback) {
-        setMessage("Jupiter API unavailable — cannot execute swap. Try again later.");
-        setMessageType("error");
-        setStep("idle");
-        return;
-      }
+      setMessage("Connecting to Jupiter...");
 
       try {
         // 1. Get full quote response from Jupiter
-        const { getJupiterQuote: jq } = await import("@/lib/swap-solana");
-        const jupiterQuote = await jq({
+        const jupiterQuote = await getJupiterQuote({
           inputMint: solanaQuote.inputMint,
           outputMint: solanaQuote.outputMint,
           amount: parseInt(solanaQuote.inAmount),
@@ -714,8 +706,7 @@ export default function SwapPage() {
               step === "quoting" ||
               !fromAmount ||
               (!quote && !solanaQuote) ||
-              !walletOk ||
-              !!solanaQuote?.isFallback
+              !walletOk
             }
             className="btn-primary w-full text-base py-3 flex items-center justify-center gap-2"
           >
@@ -756,7 +747,7 @@ export default function SwapPage() {
                   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-3.5 h-3.5 flex-shrink-0">
                     <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" />
                   </svg>
-                  <span>Estimated price — Jupiter API unreachable. Swap button disabled.</span>
+                  <span>⚠️ Jupiter API unreachable — prices are estimated. You can try swapping, but it may fail. Or use an EVM chain (Base, ETH...).</span>
                 </div>
               )}
               <div className="flex items-center justify-between text-xs text-gray-500">
