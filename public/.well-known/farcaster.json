@@ -7,12 +7,12 @@
   "frame": {
     "version": "1",
     "name": "FrameOS",
-    "iconUrl": "https://my-frame.sheclk0068.workers.dev/icon.png",
+    "iconUrl": "https://my-frame-app.vercel.app/icon.svg",
     "homeUrl": "https://my-frame.sheclk0068.workers.dev",
-    "imageUrl": "https://my-frame.sheclk0068.workers.dev/og.png",
+    "imageUrl": "https://my-frame-app.vercel.app/opengraph-image",
     "buttonTitle": "Launch FrameOS",
-    "splashImageUrl": "https://my-frame.sheclk0068.workers.dev/splash.png",
-    "splashBackgroundColor": "#0d0d12",
+    "splashImageUrl": "https://my-frame-app.vercel.app/splash",
+    "splashBackgroundColor": "#0a0a14",
     "webhookUrl": "https://my-frame.sheclk0068.workers.dev/api/webhook"
   }
 }

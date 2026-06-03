@@ -8,13 +8,27 @@ A multi-chain Mini App built for Farcaster. Swap tokens, launch coins, vote on p
 
 ## ✨ Features
 
-| Module | Description | Chain |
-|--------|-------------|-------|
-| 🔄 **Swap** | Real DEX routing via 0x Protocol | Base + Arbitrum |
-| 🚀 **Token Launch** | Deploy ERC-20 tokens in one click | Base + Arbitrum |
+| Module | Description | Chains |
+|--------|-------------|--------|
+| 🔄 **Swap** | Real DEX routing — 0x Protocol (EVM) + Jupiter (Solana) | 8 chains |
+| 🚀 **Token Launch** | Clanker (auto Uniswap V4 pool), Standard ERC-20, SPL | Base · Solana · All EVM |
 | 📊 **Polls** | Create, vote, real-time counts via Supabase | — |
+| 🧠 **Options Vault** | P/N split vault — Vitalik's options-based DeFi concept | Contract ready |
 | 🔔 **Notifications** | Welcome alerts, swap confirmations, announcements | — |
 | 🖼️ **OG Image** | Dynamic open-graph preview for social sharing | — |
+
+### Supported Chains
+
+| Chain | Swap | Token Launch |
+|-------|------|-------------|
+| ⚡ Base | ✅ 0x Protocol | ✅ Clanker / Standard |
+| 🌙 Solana | ✅ Jupiter | ✅ SPL Token |
+| 💎 Ethereum | ✅ 0x Protocol | ✅ Standard |
+| 🟡 BNB Chain | ✅ 0x Protocol | ✅ Standard |
+| 🟣 Polygon | ✅ 0x Protocol | ✅ Standard |
+| 🔵 Arbitrum | ✅ 0x Protocol | ✅ Standard |
+| 🟠 Optimism | ✅ 0x Protocol | ✅ Standard |
+| 🔴 Avalanche | ✅ 0x Protocol | ✅ Standard |
 
 ---
 
@@ -23,12 +37,12 @@ A multi-chain Mini App built for Farcaster. Swap tokens, launch coins, vote on p
 | Layer | Technology |
 |-------|-----------|
 | Framework | Next.js 16 (Turbopack) |
-| Blockchain | viem + 0x Protocol + custom ERC-20 contracts |
-| Wallet | Farcaster Mini App SDK (`@farcaster/miniapp-sdk`) |
-| Backend | Supabase (8 tables, RLS-enabled) |
+| Blockchain | viem + 0x Protocol + Jupiter + custom contracts |
+| Wallet | Farcaster Mini App SDK + MetaMask + Phantom (unified) |
+| Backend | Supabase (12 tables, RLS-enabled) |
 | Styling | Tailwind CSS 4, glass-morphism dark UI |
 | Deploy | Vercel + Cloudflare Workers proxy |
-| Multi-chain | Base (8453) + Arbitrum (42161) |
+| Multi-chain | 8 chains (EVM + Solana) |
 
 ---
 
@@ -38,6 +52,12 @@ A multi-chain Mini App built for Farcaster. Swap tokens, launch coins, vote on p
 Warpcast → Cloudflare Worker → Vercel (Next.js) → Supabase
                         ↑
               Adds CSP headers for iframe embedding
+
+       ┌─────────────────────────────────────────┐
+       │  EVM (MetaMask/Rabby)    Solana (Phantom) │
+       │     ↕ 0x API                ↕ Jupiter API │
+       │  7 EVM chains              Solana mainnet │
+       └─────────────────────────────────────────┘
 ```
 
 ---
@@ -50,23 +70,38 @@ src/
 │   ├── page.tsx               # Home with user stats, announcements
 │   ├── layout.tsx             # Root layout + Farcaster meta tags
 │   ├── opengraph-image.tsx    # Dynamic OG image (edge runtime)
-│   ├── swap/page.tsx          # 0x DEX swap interface
-│   ├── token-launch/page.tsx  # ERC-20 deployment UI
+│   ├── swap/page.tsx          # 8-chain swap (0x + Jupiter)
+│   ├── token-launch/page.tsx  # Clanker / ERC-20 / SPL deployment
 │   ├── polls/page.tsx         # Voting system
 │   ├── notifications/page.tsx # Notification center
+│   ├── options/page.tsx       # Options Vault (P/N split concept)
+│   ├── splash/route.tsx       # Splash screen OG image
 │   └── api/webhook/route.ts   # Farcaster frame events
 ├── hooks/
-│   └── useWallet.ts           # Farcaster wallet provider hook
+│   ├── useWallet.ts           # EVM wallet (MetaMask/Rabby/Farcaster)
+│   ├── useSolanaWallet.ts     # Solana wallet (Phantom/Backpack)
+│   └── useWalletManager.ts    # Unified wallet manager (switch EVM/Solana)
+├── components/
+│   ├── wallet-status-bar.tsx  # Wallet status + switch button
+│   ├── wallet-selector.tsx    # Wallet connection modal
+│   ├── swap-error-boundary.tsx# Error boundary for Swap page
+│   └── toast.tsx              # Toast notifications
 ├── lib/
-│   ├── swap.ts                # 0x API client, chain config, tokens
+│   ├── swap.ts                # 0x API client, chain config, tokens (8 chains)
+│   ├── swap-solana.ts         # Jupiter API client (Solana swaps)
+│   ├── clanker.ts             # Clanker SDK integration
+│   ├── token-launch-solana.ts # SPL token creation
+│   ├── options-vault.ts       # Options Vault contract interface
+│   ├── options-abi.ts         # Options contract ABI
 │   ├── supabase-client.ts     # Browser Supabase client
 │   ├── supabase-server.ts     # Server Supabase client
 │   └── types.ts               # Shared TypeScript types
 ├── contracts/
 │   ├── FrameToken.sol         # ERC-20 contract (self-contained)
-│   └── FrameToken.json        # Compiled ABI + bytecode
-└── components/
-    └── toast.tsx              # Toast notification component
+│   ├── FrameFactory.sol       # Token factory (deploy once, create many)
+│   ├── OptionsVault.sol       # P/N split vault (Vitalik's proposal)
+│   ├── FrameFactory.json      # Compiled factory ABI + bytecode
+│   └── out/                   # Compiled artifacts
 ```
 
 ---

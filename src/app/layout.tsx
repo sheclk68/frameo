@@ -14,9 +14,15 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "FrameOS - Farcaster Mini App Hub",
-  description: "Swap tokens, vote on polls, launch memecoins on Base",
+  description: "Swap tokens, vote on polls, create tokens across 8 chains",
+  icons: {
+    icon: [
+      { url: "/icon.svg", type: "image/svg+xml" },
+    ],
+    apple: { url: "/icon.svg", type: "image/svg+xml" },
+  },
   other: {
-    "fc:frame": '{"version":"next","imageUrl":"https://my-frame.sheclk0068.workers.dev/opengraph-image","button":{"title":"Launch App","action":{"type":"launch_frame","name":"FrameOS","url":"https://my-frame.sheclk0068.workers.dev"}}}',
+    "fc:frame": '{"version":"next","imageUrl":"https://my-frame-app.vercel.app/opengraph-image","button":{"title":"Launch App","action":{"type":"launch_frame","name":"FrameOS","url":"https://my-frame-app.vercel.app"}}}',
   },
 };
 

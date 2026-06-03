@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { sdk } from "@farcaster/miniapp-sdk";
 import { createClient } from "@/lib/supabase-client";
 import { SwapLog } from "@/lib/types";
@@ -11,12 +11,24 @@ import {
   getChainConfig,
   toWei,
   fromWei,
+  POPULAR_CHAIN_KEYS,
+  SOL_NATIVE,
+  isSolanaChain,
   type SwapQuote,
   type TokenItem,
   type ChainKey,
 } from "@/lib/swap";
-import { useWallet } from "@/hooks/useWallet";
+import { useWalletManager } from "@/hooks/useWalletManager";
+import {
+  getSolanaQuote,
+  getJupiterSwapTransaction,
+  signAndSendSolanaSwap,
+  waitForSolanaTx,
+  type SolanaSwapQuote,
+} from "@/lib/swap-solana";
 import { type Address, type Hash } from "viem";
+import WalletSelector from "@/components/wallet-selector";
+import SwapErrorBoundary from "@/components/swap-error-boundary";
 
 // Icons
 const icons = {
@@ -45,6 +57,11 @@ const icons = {
       <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" />
     </svg>
   ),
+  share: (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+      <path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z" />
+    </svg>
+  ),
 };
 
 type SwapStep = "idle" | "quoting" | "confirm" | "swapping" | "done" | "error";
@@ -68,7 +85,33 @@ export default function SwapPage() {
   const [quote, setQuote] = useState<SwapQuote | null>(null);
   const [txHash, setTxHash] = useState<string>("");
 
-  const wallet = useWallet();
+  const walletManager = useWalletManager();
+  const wallet = walletManager.evmWallet;
+  const solanaWallet = walletManager.solanaWallet;
+  const isSolana = isSolanaChain(chainKey);
+  const isInFarcaster = !!user.username || !!user.fid;
+
+  // Show all chains in browser, hide Solana in Warpcast (no Solana wallet available)
+  const availableChains = isInFarcaster
+    ? POPULAR_CHAIN_KEYS.filter((k) => k !== "solana")
+    : POPULAR_CHAIN_KEYS;
+
+  // Solana state (separate from EVM flow)
+  const [solanaQuote, setSolanaQuote] = useState<SolanaSwapQuote | null>(null);
+  const [solanaTxSignature, setSolanaTxSignature] = useState("");
+  const [showWalletSelector, setShowWalletSelector] = useState(false);
+
+  // Auto-activate the right wallet when chain changes
+  useEffect(() => {
+    walletManager.ensureWalletForChain(chainKey);
+  }, [chainKey]);
+
+  // If in Farcaster and chainKey is Solana, fall back to Base
+  useEffect(() => {
+    if (isInFarcaster && isSolana) {
+      setChainKey("base");
+    }
+  }, [isInFarcaster, isSolana]);
 
   // Init SDK context
   useEffect(() => {
@@ -107,49 +150,76 @@ export default function SwapPage() {
 
     setStep("quoting");
     setQuote(null);
+    setSolanaQuote(null);
 
     try {
-      const weiAmount = toWei(fromAmount, fromToken.decimals);
-      if (weiAmount === "0") {
-        setMessage("Amount too small");
-        setMessageType("error");
-        setStep("idle");
-        return;
+      if (isSolana) {
+        // --- Solana: Jupiter API ---
+        const rawAmount = Math.floor(
+          parseFloat(fromAmount) * Math.pow(10, fromToken.decimals)
+        );
+        if (rawAmount <= 0) {
+          setMessage("Amount too small");
+          setMessageType("error");
+          setStep("idle");
+          return;
+        }
+
+        const sq = await getSolanaQuote({
+          inputMint: fromToken.address,
+          outputMint: toToken.address,
+          amount: rawAmount,
+          slippageBps: 50,
+        });
+
+        setSolanaQuote(sq);
+        setStep("confirm");
+        setMessage("");
+      } else {
+        // --- EVM: 0x API ---
+        const weiAmount = toWei(fromAmount, fromToken.decimals);
+        if (weiAmount === "0") {
+          setMessage("Amount too small");
+          setMessageType("error");
+          setStep("idle");
+          return;
+        }
+
+        // For native ETH, 0x uses the zero address proxy
+        const sellAddr =
+          fromToken.address === "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
+            ? "0x0000000000000000000000000000000000000000"
+            : fromToken.address;
+
+        const q = await fetchSwapQuote({
+          chainId: CHAINS[chainKey].id,
+          sellToken: sellAddr as Address,
+          buyToken: toToken.address as Address,
+          sellAmount: weiAmount,
+          takerAddress: wallet.address ?? undefined,
+          slippageBps: 50, // 0.5%
+        });
+
+        setQuote(q);
+        setStep("confirm");
+        setMessage("");
       }
-
-      // For native ETH, 0x uses the zero address proxy
-      const sellAddr =
-        fromToken.address === "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE"
-          ? "0x0000000000000000000000000000000000000000"
-          : fromToken.address;
-
-      const q = await fetchSwapQuote({
-        chainId: CHAINS[chainKey].id,
-        sellToken: sellAddr as Address,
-        buyToken: toToken.address as Address,
-        sellAmount: weiAmount,
-        takerAddress: wallet.address ?? undefined,
-        slippageBps: 50, // 0.5%
-      });
-
-      setQuote(q);
-      setStep("confirm");
-      setMessage("");
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Quote failed";
-      setMessage(msg.includes("INSUFFICIENT") ? "Insufficient liquidity" : msg);
+      setMessage(msg.includes("INSUFFICIENT") || msg.includes("No routes")
+        ? "Insufficient liquidity"
+        : msg);
       setMessageType("error");
       setStep("error");
     }
-  }, [fromAmount, fromToken, toToken, wallet.address, chainKey]);
+  }, [fromAmount, fromToken, toToken, wallet.address, chainKey, isSolana]);
 
   // Auto-get quote when amount changes
   useEffect(() => {
+    if (!fromAmount || parseFloat(fromAmount) <= 0) return;
     const timer = setTimeout(() => {
-      if (fromAmount && parseFloat(fromAmount) > 0) {
-        getQuote();
-      }
-    }, 600); // debounce
+      getQuote().catch(() => {}); // never crash on quote failure
+    }, 600);
     return () => clearTimeout(timer);
   }, [fromAmount, fromToken, toToken, chainKey, getQuote]);
 
@@ -161,96 +231,206 @@ export default function SwapPage() {
     setStep("idle");
   }, [chainKey]);
 
-  // Execute swap
+  // Execute swap (EVM or Solana)
   const executeSwap = useCallback(async () => {
-    if (!quote || !wallet.address) return;
+    if (isSolana) {
+      // --- Solana Swap via Jupiter ---
+      if (!solanaQuote || !solanaWallet.publicKey || !solanaWallet.connection) return;
 
-    setStep("swapping");
-    setMessage("");
+      setStep("swapping");
+      setMessage("");
 
-    try {
-      const value = BigInt(quote.value || "0");
-      const hash = await wallet.sendTransaction(
-        quote.to as Address,
-        quote.data as Hash,
-        value
-      );
+      try {
+        // 1. Get full quote response from Jupiter
+        const jupiterQuote = await (
+          await import("@/lib/swap-solana")
+        ).getJupiterQuote({
+          inputMint: solanaQuote.inputMint,
+          outputMint: solanaQuote.outputMint,
+          amount: parseInt(solanaQuote.inAmount),
+          slippageBps: solanaQuote.slippageBps,
+        });
 
-      setTxHash(hash as string);
-      setMessage(`Transaction submitted: ${String(hash).slice(0, 10)}...`);
-      setMessageType("info");
+        // 2. Get swap transaction from Jupiter
+        const swapTx = await getJupiterSwapTransaction({
+          quoteResponse: jupiterQuote,
+          userPublicKey: solanaWallet.publicKey,
+          wrapAndUnwrapSol: true,
+          dynamicComputeUnitLimit: true,
+          prioritizationFeeLamports: "auto" as const,
+        });
 
-      // Wait for receipt
-      await wallet.waitForReceipt(hash as Hash);
-      setStep("done");
-      setMessage("Swap completed! ✅");
-      setMessageType("success");
-      setFromAmount("");
+        // 3. Sign and send via Solana wallet
+        const signature = await signAndSendSolanaSwap(
+          solanaWallet.connection,
+          swapTx.swapTransaction,
+          async (tx) => {
+            // Sign via provider
+            const signed = await solanaWallet.signTx(tx);
+            // Send raw transaction
+            const sig = await solanaWallet.connection!.sendRawTransaction(
+              signed.serialize(),
+              { skipPreflight: true, maxRetries: 3 }
+            );
+            return sig;
+          }
+        );
 
-      // Log to Supabase
-      if (user.fid) {
-        const supabase = createClient();
-        supabase
-          .from("swap_logs")
-          .insert({
-            fid: user.fid,
-            from_token: fromToken.symbol,
-            to_token: toToken.symbol,
-            from_amount: fromAmount,
-            to_amount: fromWei(quote.buyAmount, toToken.decimals),
-            tx_hash: hash as string,
-            status: "completed",
-          })
-          .then(() => loadHistory(user.fid!));
+        setSolanaTxSignature(signature);
+        setMessage(`Transaction submitted: ${signature.slice(0, 10)}...`);
+        setMessageType("info");
+
+        // 4. Wait for confirmation
+        await waitForSolanaTx(solanaWallet.connection, signature);
+        setStep("done");
+        setMessage("Swap completed! ✅");
+        setMessageType("success");
+        setFromAmount("");
+        setTxHash(signature);
+
+        // 5. Log to Supabase
+        if (user.fid) {
+          const supabase = createClient();
+          const outAmount = fromWei(
+            BigInt(solanaQuote.outAmount).toString(),
+            toToken.decimals
+          );
+          supabase
+            .from("users")
+            .upsert(
+              { fid: user.fid, username: user.username, last_seen: new Date().toISOString() },
+              { onConflict: "fid" }
+            )
+            .then(() =>
+              supabase.from("swap_logs").insert({
+                fid: user.fid,
+                from_token: fromToken.symbol,
+                to_token: toToken.symbol,
+                from_amount: fromAmount,
+                to_amount: outAmount,
+                tx_hash: signature,
+                status: "completed",
+              })
+            )
+            .then(() => loadHistory(user.fid!));
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Swap failed";
+        if (
+          msg.includes("rejected") ||
+          msg.includes("denied") ||
+          msg.includes("cancel")
+        ) {
+          setMessage("Transaction cancelled");
+        } else {
+          setMessage(`Swap failed: ${msg.slice(0, 100)}`);
+        }
+        setMessageType("error");
+        setStep("error");
       }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Swap failed";
-      if (
-        msg.includes("rejected") ||
-        msg.includes("denied") ||
-        msg.includes("cancel")
-      ) {
-        setMessage("Transaction cancelled");
-      } else {
-        setMessage(`Swap failed: ${msg.slice(0, 100)}`);
+    } else {
+      // --- EVM Swap via 0x ---
+      if (!quote || !wallet.address) return;
+
+      setStep("swapping");
+      setMessage("");
+
+      try {
+        const value = BigInt(quote.value || "0");
+        const hash = await wallet.sendTransaction(
+          quote.to as Address,
+          quote.data as Hash,
+          value
+        );
+
+        setTxHash(hash as string);
+        setMessage(`Transaction submitted: ${String(hash).slice(0, 10)}...`);
+        setMessageType("info");
+
+        // Wait for receipt
+        await wallet.waitForReceipt(hash as Hash);
+        setStep("done");
+        setMessage("Swap completed! ✅");
+        setMessageType("success");
+        setFromAmount("");
+
+        // Log to Supabase
+        if (user.fid) {
+          const supabase = createClient();
+          supabase
+            .from("users")
+            .upsert(
+              { fid: user.fid, username: user.username, last_seen: new Date().toISOString() },
+              { onConflict: "fid" }
+            )
+            .then(() =>
+              supabase.from("swap_logs").insert({
+                fid: user.fid,
+                from_token: fromToken.symbol,
+                to_token: toToken.symbol,
+                from_amount: fromAmount,
+                to_amount: fromWei(quote.buyAmount, toToken.decimals),
+                tx_hash: hash as string,
+                status: "completed",
+              })
+            )
+            .then(() => loadHistory(user.fid!));
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Swap failed";
+        if (
+          msg.includes("rejected") ||
+          msg.includes("denied") ||
+          msg.includes("cancel")
+        ) {
+          setMessage("Transaction cancelled");
+        } else {
+          setMessage(`Swap failed: ${msg.slice(0, 100)}`);
+        }
+        setMessageType("error");
+        setStep("error");
       }
-      setMessageType("error");
-      setStep("error");
     }
   }, [
     quote,
+    solanaQuote,
     wallet,
+    solanaWallet,
     fromToken,
     toToken,
     fromAmount,
     user.fid,
+    isSolana,
   ]);
 
-  // Quote display values
+  // Quote display values (EVM or Solana)
   const quoteBuyAmount = quote
     ? fromWei(quote.buyAmount, toToken.decimals)
+    : solanaQuote
+    ? fromWei(BigInt(solanaQuote.outAmount).toString(), toToken.decimals)
     : "";
   const quotePrice = quote
     ? (1 / parseFloat(fromWei(quote.price, 18))).toFixed(6)
+    : solanaQuote
+    ? "≈ from Jupiter"
     : "";
+  const routesDisplay = quote
+    ? quote.sources.map((s) => ` ${s.name}`)
+    : solanaQuote
+    ? [` Jupiter (${solanaQuote.routeSummary})`]
+    : [];
+  const quoteSlippageBps = solanaQuote ? solanaQuote.slippageBps : 50;
 
-  // Check if wallet is ready and on Base
-  const walletOk = wallet.isReady && !wallet.error;
-  const isBase = wallet.chainId === 8453;
-
-  if (!wallet.isReady) {
-    return (
-      <main className="flex min-h-screen flex-col items-center justify-center bg-fc-gradient p-6">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 rounded-full shimmer" />
-          <div className="w-40 h-4 rounded shimmer" />
-          <p className="text-xs text-gray-500">Connecting wallet...</p>
-        </div>
-      </main>
-    );
-  }
+  // Wallet readiness: detect EVM vs Solana via unified manager
+  const walletOk = isSolana
+    ? walletManager.activeType === "solana"
+    : walletManager.activeType === "evm";
+  const chainSupported = isSolana
+    ? true
+    : (wallet.chainId === 8453 || wallet.chainId === 42161);
 
   return (
+    <SwapErrorBoundary>
     <main className="flex min-h-screen flex-col bg-fc-gradient">
       {/* Header */}
       <header className="pt-12 pb-4 px-6 fade-in">
@@ -271,21 +451,45 @@ export default function SwapPage() {
         </div>
       </header>
 
-      {/* Wallet Warning */}
+      {/* Unified Wallet Connect — single button for all wallets */}
       {!walletOk && (
         <section className="px-6 mb-3">
-          <div className="max-w-md mx-auto glass-card border border-yellow-600/30 p-3 flex items-center gap-2 text-yellow-400 text-xs">
-            {icons.warning}
-            Wallet not detected. Open in Warpcast to swap.
+          <div className="max-w-md mx-auto glass-card border border-purple-600/30 p-4">
+            <div className="flex items-center gap-2 text-purple-400 text-xs mb-2">
+              {icons.warning}
+              {isInFarcaster && isSolana
+                ? "Solana not available in Warpcast — open in browser"
+                : "Wallet not connected"}
+            </div>
+            {isInFarcaster && isSolana ? (
+              <div className="text-xs text-gray-400">
+                <p>Open <span className="text-purple-400">frameos.sheclk0068.workers.dev</span> in your browser with Phantom installed to swap on Solana.</p>
+              </div>
+            ) : (
+              <button
+                onClick={() => setShowWalletSelector(true)}
+                className="btn-primary w-full text-sm py-2 flex items-center justify-center gap-2"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                  <path d="M21 18v3H3V3h18v3h-9a3 3 0 000 6h9zm0-2h-9a1 1 0 010-2h9v2zm-9-4a1 1 0 110-2 1 1 0 010 2z" />
+                </svg>
+                Connect Wallet
+              </button>
+            )}
+            <p className="text-[10px] text-gray-500 mt-2">
+              {isInFarcaster
+                ? "In Warpcast: auto-connects. Tap above for browser wallets."
+                : "MetaMask for EVM chains · Phantom for Solana"}
+            </p>
           </div>
         </section>
       )}
 
-      {!isBase && walletOk && (
+      {walletOk && !isSolana && !chainSupported && (
         <section className="px-6 mb-3">
           <div className="max-w-md mx-auto glass-card border border-yellow-600/30 p-3 flex items-center gap-2 text-yellow-400 text-xs">
             {icons.warning}
-            Please switch to Base network (chain ID: 8453)
+            Please switch to Base or Arbitrum network to execute swaps.
           </div>
         </section>
       )}
@@ -293,15 +497,49 @@ export default function SwapPage() {
       {/* Main Swap Card */}
       <section className="px-6 fade-in" style={{ animationDelay: "0.1s" }}>
         <div className="max-w-md mx-auto glass-card p-5 glow-purple">
+          {/* Chain Selector Strip — visible at top so users see chains immediately */}
+          <div className="flex items-center gap-1.5 flex-wrap mb-4 pb-3 border-b border-gray-800">
+            <span className="text-[10px] text-gray-500 mr-1">Chain:</span>
+            {availableChains.map((key) => {
+              const chain = CHAINS[key];
+              return (
+                <button
+                  key={key}
+                  onClick={() => setChainKey(key)}
+                  className={`badge cursor-pointer transition-all text-[10px] ${
+                    chainKey === key
+                      ? chain.color + " opacity-100 scale-105"
+                      : "opacity-40 hover:opacity-70"
+                  }`}
+                  style={chainKey !== key ? { background: "rgba(138,99,210,0.1)", color: "#8a63d2" } : {}}
+                >
+                  {chain.label}
+                </button>
+              );
+            })}
+            {isInFarcaster && (
+              <span className="text-[9px] text-gray-600 ml-auto">
+                Solana→browser
+              </span>
+            )}
+          </div>
           {/* From */}
           <div className="mb-3">
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs text-gray-500">From</span>
-              <span className="text-xs text-gray-500">
+              <span
+                className="text-xs text-gray-500 cursor-pointer"
+                onClick={() => {
+                  if (wallet.address) {
+                    navigator.clipboard.writeText(String(wallet.address));
+                    setMessage("Address copied!");
+                    setMessageType("success");
+                    setTimeout(() => setMessage(""), 2000);
+                  }
+                }}
+              >
                 {wallet.address
-                  ? `${String(wallet.address).slice(0, 6)}...${String(
-                      wallet.address
-                    ).slice(-4)}`
+                  ? String(wallet.address)
                   : ""}
               </span>
             </div>
@@ -388,8 +626,11 @@ export default function SwapPage() {
                   <span className="text-purple-400">Fetching best price...</span>
                 ) : quote ? (
                   <span className="text-emerald-400">
-                    Best route
-                    {quote.sources.slice(0, 2).map((s) => ` ${s.name}`)}
+                    Best route{quote.sources.slice(0, 2).map((s) => ` ${s.name}`)}
+                  </span>
+                ) : solanaQuote ? (
+                  <span className="text-emerald-400">
+                    Jupiter {solanaQuote.routeSummary ? `(${solanaQuote.routeSummary})` : ""}
                   </span>
                 ) : null}
               </span>
@@ -454,7 +695,7 @@ export default function SwapPage() {
               step === "swapping" ||
               step === "quoting" ||
               !fromAmount ||
-              !quote ||
+              (!quote && !solanaQuote) ||
               !walletOk
             }
             className="btn-primary w-full text-base py-3 flex items-center justify-center gap-2"
@@ -471,8 +712,13 @@ export default function SwapPage() {
               </>
             ) : !walletOk ? (
               <>
+                {icons.swap}
+                Connect Wallet
+              </>
+            ) : !isSolana && !chainSupported ? (
+              <>
                 {icons.warning}
-                Wallet not connected
+                Switch to Base or Arbitrum
               </>
             ) : (
               <>
@@ -483,21 +729,29 @@ export default function SwapPage() {
           </button>
 
           {/* Swap details */}
-          {quote && step !== "swapping" && (
+          {(quote || solanaQuote) && step !== "swapping" && (
             <div className="mt-3 space-y-1">
               <div className="flex items-center justify-between text-xs text-gray-500">
                 <span>Rate</span>
                 <span>
-                  1 {fromToken.symbol} ≈ {quotePrice} {toToken.symbol}
+                  {quote ? (
+                    <>1 {fromToken.symbol} ≈ {quotePrice} {toToken.symbol}</>
+                  ) : (
+                    <>via Jupiter • {solanaQuote?.routeSummary ?? ""}</>
+                  )}
                 </span>
               </div>
               <div className="flex items-center justify-between text-xs text-gray-500">
                 <span>Slippage</span>
-                <span>0.5%</span>
+                <span>{quoteSlippageBps / 100}%</span>
+              </div>
+              <div className="flex items-center justify-between text-xs text-gray-500">
+                <span>FrameOS Fee</span>
+                <span className="text-purple-400">{(parseFloat(quoteBuyAmount || "0") * 0.003).toFixed(6)} {toToken.symbol} (0.3%)</span>
               </div>
               <div className="flex items-center justify-between text-xs text-gray-500">
                 <span>Network fee</span>
-                <span>~{(Number(quote.gas) * Number(quote.gasPrice) / 1e18).toFixed(6)} ETH</span>
+                <span>{quote ? `~${(Number(quote.gas) * Number(quote.gasPrice) / 1e18).toFixed(6)} ETH` : isSolana ? "~0.000005 SOL" : ""}</span>
               </div>
             </div>
           )}
@@ -514,7 +768,7 @@ export default function SwapPage() {
               }`}
             >
               {message}
-              {txHash && (
+              {txHash && !isSolana && (
                 <a
                   href={`https://basescan.org/tx/${txHash}`}
                   target="_blank"
@@ -524,6 +778,34 @@ export default function SwapPage() {
                   View on BaseScan ↗
                 </a>
               )}
+              {solanaTxSignature && isSolana && (
+                <a
+                  href={`https://solscan.io/tx/${solanaTxSignature}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="block text-purple-400 underline mt-1"
+                >
+                  View on Solscan ↗
+                </a>
+              )}
+            </div>
+          )}
+
+          {/* Share on Farcaster */}
+          {step === "done" && fromAmount && (
+            <div className="mt-3 p-3 rounded-xl bg-purple-600/10 border border-purple-500/20">
+              <p className="text-xs text-gray-400 mb-2 text-center">Share your trade to get more users 🚀</p>
+              <button
+                onClick={() => {
+                  const shareText = `I just swapped ${fromAmount} ${fromToken.symbol} → ${quoteBuyAmount.slice(0, 10)} ${toToken.symbol} on FrameOS 🔄\n\nTry it: frameos.sheclk0068.workers.dev`;
+                  const castUrl = `https://warpcast.com/~/compose?text=${encodeURIComponent(shareText)}`;
+                  try { sdk.actions.openUrl?.(castUrl); } catch { window.open(castUrl, "_blank"); }
+                }}
+                className="w-full btn-primary text-sm py-2 flex items-center justify-center gap-2"
+              >
+                {icons.share}
+                Share on Farcaster
+              </button>
             </div>
           )}
         </div>
@@ -534,25 +816,28 @@ export default function SwapPage() {
         <div className="max-w-md mx-auto glass-card p-3">
           <div className="flex items-center justify-between text-xs text-gray-500">
             <span>Powered by</span>
-            <span className="text-purple-400">0x Protocol</span>
+            <span className="text-purple-400">{isSolana ? "Jupiter" : "0x Protocol"}</span>
           </div>
           <div className="flex items-center justify-between text-xs text-gray-500 mt-1">
             <span>Network</span>
-            <div className="flex items-center gap-1">
-              {Object.entries(CHAINS).map(([key, chain]) => (
-                <button
-                  key={key}
-                  onClick={() => setChainKey(key as ChainKey)}
-                  className={`badge cursor-pointer transition-opacity ${
-                    chainKey === key
-                      ? chain.color + " opacity-100"
-                      : "opacity-40 hover:opacity-70"
-                  }`}
-                  style={chainKey !== key ? { background: "rgba(138,99,210,0.15)", color: "#8a63d2" } : {}}
-                >
-                  {chain.label}
-                </button>
-              ))}
+            <div className="flex items-center gap-1 flex-wrap justify-end max-w-[220px]">
+              {availableChains.map((key) => {
+                const chain = CHAINS[key];
+                return (
+                  <button
+                    key={key}
+                    onClick={() => setChainKey(key)}
+                    className={`badge cursor-pointer transition-opacity ${
+                      chainKey === key
+                        ? chain.color + " opacity-100"
+                        : "opacity-40 hover:opacity-70"
+                    }`}
+                    style={chainKey !== key ? { background: "rgba(138,99,210,0.1)", color: "#8a63d2" } : {}}
+                  >
+                    {chain.label}
+                  </button>
+                );
+              })}
             </div>
           </div>
           <div className="flex items-center justify-between text-xs text-gray-500 mt-1">
@@ -600,10 +885,30 @@ export default function SwapPage() {
       <footer className="px-6 py-6 mt-auto fade-in">
         <div className="max-w-md mx-auto text-center">
           <p className="text-[10px] text-gray-600">
-            Powered by FrameOS · 0x Protocol · {CHAINS[chainKey].name}
+            Powered by FrameOS · {isSolana ? "Jupiter" : "0x Protocol"} · {CHAINS[chainKey].name}
           </p>
         </div>
       </footer>
+
+      {/* Wallet Selector Modal */}
+      <WalletSelector
+        isOpen={showWalletSelector}
+        onClose={() => setShowWalletSelector(false)}
+        onConnectEVM={() => {
+          if (isSolana) setChainKey("base");
+          walletManager.connect("evm");
+        }}
+        onConnectSolana={() => {
+          if (!isSolana) setChainKey("solana");
+          walletManager.connect("solana");
+        }}
+        hasEthereum={typeof window !== "undefined" && !!(window as any).ethereum && !(window as any).ethereum?.isPhantom}
+        hasSolana={typeof window !== "undefined" && (!!(window as any).solana)}
+        evmConnected={walletManager.evmWallet.walletConnected}
+        solanaConnected={walletManager.solanaWallet.walletConnected}
+        activeType={walletManager.activeType}
+      />
     </main>
+    </SwapErrorBoundary>
   );
 }

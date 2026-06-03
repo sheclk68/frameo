@@ -37,17 +37,21 @@ export default function PollsPage() {
   const [newTitle, setNewTitle] = useState("");
   const [newDesc, setNewDesc] = useState("");
   const [optionsInput, setOptionsInput] = useState("");
+  const parsedOptions = optionsInput.split(",").map(s => s.trim()).filter(Boolean);
+  const optionsValid = parsedOptions.length >= 2;
   const [isSDKReady, setIsSDKReady] = useState(false);
   const [message, setMessage] = useState("");
   const [votingPoll, setVotingPoll] = useState<number | null>(null);
 
   useEffect(() => {
     const init = async () => {
+      // Load polls right away — don't block on SDK
+      loadPolls();
+
       try {
         const ctx = await sdk.context;
         setUser(ctx?.user || {});
         sdk.actions.ready();
-        loadPolls();
         if (ctx?.user?.fid) loadUserVotes(ctx.user.fid);
       } catch (e) {
         console.log("Outside Farcaster");
@@ -58,50 +62,50 @@ export default function PollsPage() {
   }, []);
 
   const loadPolls = async () => {
-    try {
-      const supabase = createClient();
-      const { data } = await supabase
-        .from("polls")
-        .select("*")
-        .order("created_at", { ascending: false });
-      if (data) {
-        setPolls(data.map(p => ({ ...p, options: p.options as unknown as string[] })));
-        loadVoteCounts();
-      }
-    } catch (e) {
-      console.log("No polls");
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("polls")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (error) {
+      console.error("loadPolls error:", error.message, error.details);
+      return;
+    }
+    if (data && data.length > 0) {
+      setPolls(data.map(p => ({ ...p, options: p.options as unknown as string[] })));
+      loadVoteCounts();
     }
   };
 
   const loadUserVotes = async (fid: number) => {
-    try {
-      const supabase = createClient();
-      const { data } = await supabase.from("poll_votes").select("*").eq("fid", fid);
-      if (data) {
-        const voteMap: { [pollId: number]: number } = {};
-        data.forEach((v: PollVote) => { voteMap[v.poll_id] = v.option_index; });
-        setVotes(voteMap);
-      }
-    } catch (e) {
-      console.log("No votes");
+    const supabase = createClient();
+    const { data, error } = await supabase.from("poll_votes").select("*").eq("fid", fid);
+    if (error) {
+      console.error("loadUserVotes error:", error.message, error.details);
+      return;
+    }
+    if (data) {
+      const voteMap: { [pollId: number]: number } = {};
+      data.forEach((v: PollVote) => { voteMap[v.poll_id] = v.option_index; });
+      setVotes(voteMap);
     }
   };
 
   const loadVoteCounts = async () => {
-    try {
-      const supabase = createClient();
-      const { data } = await supabase
-        .from("poll_votes")
-        .select("poll_id");
-      if (data) {
-        const counts: { [pollId: number]: number } = {};
-        data.forEach((v: { poll_id: number }) => {
-          counts[v.poll_id] = (counts[v.poll_id] || 0) + 1;
-        });
-        setVoteCounts(counts);
-      }
-    } catch (e) {
-      console.log("No vote counts");
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("poll_votes")
+      .select("poll_id");
+    if (error) {
+      console.error("loadVoteCounts error:", error.message, error.details);
+      return;
+    }
+    if (data) {
+      const counts: { [pollId: number]: number } = {};
+      data.forEach((v: { poll_id: number }) => {
+        counts[v.poll_id] = (counts[v.poll_id] || 0) + 1;
+      });
+      setVoteCounts(counts);
     }
   };
 
@@ -117,39 +121,82 @@ export default function PollsPage() {
     setVotingPoll(pollId);
     try {
       const supabase = createClient();
-      await supabase.from("poll_votes").insert({
+
+      // Ensure user exists before voting (FK constraint)
+      const { error: userErr } = await supabase.from("users").upsert(
+        { fid: user.fid, username: user.username, last_seen: new Date().toISOString() },
+        { onConflict: "fid" }
+      );
+      if (userErr) {
+        console.error("User upsert error:", userErr);
+        setMessage(`User sync failed: ${userErr.message}`);
+        setVotingPoll(null);
+        return;
+      }
+
+      const { error: voteErr } = await supabase.from("poll_votes").insert({
         poll_id: pollId,
         fid: user.fid,
         option_index: optionIndex,
       });
+      if (voteErr) {
+        console.error("Vote insert error:", voteErr);
+        setMessage(voteErr.message.includes("duplicate") ? "You already voted!" : `Vote failed: ${voteErr.message}`);
+        setVotingPoll(null);
+        return;
+      }
       setVotes(prev => ({ ...prev, [pollId]: optionIndex }));
       setVoteCounts(prev => ({ ...prev, [pollId]: (prev[pollId] || 0) + 1 }));
       setMessage("Vote cast successfully ✅");
     } catch (e) {
-      setMessage("Vote failed");
+      const msg = e instanceof Error ? e.message : "Unknown error";
+      setMessage(`Vote failed: ${msg}`);
     }
     setVotingPoll(null);
   };
 
   const createPoll = async () => {
     if (!newTitle.trim() || !optionsInput.trim()) {
-      setMessage("Title and options required");
+      setMessage("Title and at least 2 options (comma-separated) required");
       return;
     }
-    const options = optionsInput.split(",").map(s => s.trim()).filter(Boolean);
-    if (options.length < 2) {
-      setMessage("Need at least 2 options");
+    if (parsedOptions.length < 2) {
+      setMessage(`Need at least 2 options. You entered ${parsedOptions.length}.`);
       return;
     }
+
+    const fid = user.fid;
+    if (!fid) {
+      setMessage("You need to sign in with Farcaster first");
+      return;
+    }
+
     try {
       const supabase = createClient();
-      await supabase.from("polls").insert({
+
+      // Ensure user exists before creating poll (FK constraint)
+      const { error: userErr } = await supabase.from("users").upsert(
+        { fid, username: user.username, last_seen: new Date().toISOString() },
+        { onConflict: "fid" }
+      );
+      if (userErr) {
+        console.error("User upsert error:", userErr);
+        setMessage(`User sync failed: ${userErr.message}`);
+        return;
+      }
+
+      const { error: pollErr } = await supabase.from("polls").insert({
         title: newTitle.trim(),
         description: newDesc.trim() || null,
-        creator_fid: user.fid || 0,
-        options: options,
+        creator_fid: fid,
+        options: parsedOptions,
         is_active: true,
       });
+      if (pollErr) {
+        console.error("Poll insert error:", pollErr);
+        setMessage(`Failed to create poll: ${pollErr.message}`);
+        return;
+      }
       setNewTitle("");
       setNewDesc("");
       setOptionsInput("");
@@ -157,7 +204,8 @@ export default function PollsPage() {
       setMessage("Poll created! ✅");
       loadPolls();
     } catch (e) {
-      setMessage("Failed to create poll");
+      const msg = e instanceof Error ? e.message : "Unknown error";
+      setMessage(`Failed to create poll: ${msg}`);
     }
   };
 
@@ -214,12 +262,39 @@ export default function PollsPage() {
             <input
               value={optionsInput}
               onChange={(e) => setOptionsInput(e.target.value)}
-              placeholder="Options: Option A, Option B, Option C"
-              className="input-glass mb-2"
+              placeholder="Type options separated by commas: Yes, No, Maybe"
+              className={`input-glass mb-1 ${!optionsValid && optionsInput.length > 0 ? "border-yellow-500/30" : ""}`}
             />
-            <p className="text-[10px] text-gray-500 mb-3">Separate options with commas</p>
-            <button onClick={createPoll} className="btn-primary w-full text-sm">
-              Create Poll
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] text-gray-500">
+                Separate with commas (e.g. "Yes, No, Maybe")
+              </p>
+              <span className={`badge ${optionsValid ? "badge-green" : "badge-pink"} text-[9px]`}>
+                {parsedOptions.length} option{parsedOptions.length !== 1 ? "s" : ""}{" "}
+                {!optionsValid ? "(need ≥2)" : "✓"}
+              </span>
+            </div>
+            {/* Live preview of parsed options */}
+            {parsedOptions.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-3">
+                {parsedOptions.map((opt, i) => (
+                  <span
+                    key={i}
+                    className="text-[10px] px-2 py-1 rounded-full bg-white/5 border border-white/10 text-gray-300"
+                  >
+                    {i + 1}. {opt}
+                  </span>
+                ))}
+              </div>
+            )}
+            <button
+              onClick={createPoll}
+              disabled={!optionsValid}
+              className="btn-primary w-full text-sm"
+            >
+              {optionsValid
+                ? `Create Poll (${parsedOptions.length} options)`
+                : "Enter at least 2 options"}
             </button>
           </div>
         </section>

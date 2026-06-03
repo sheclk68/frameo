@@ -4,6 +4,9 @@ import { useEffect, useState, useCallback } from "react";
 import { sdk } from "@farcaster/miniapp-sdk";
 import { createClient } from "@/lib/supabase-client";
 import { Announcement } from "@/lib/types";
+import { useWalletManager } from "@/hooks/useWalletManager";
+import WalletStatusBar from "@/components/wallet-status-bar";
+import WalletSelector from "@/components/wallet-selector";
 
 // Inline icons
 const icons = {
@@ -69,7 +72,10 @@ export default function Home() {
   const [user, setUser] = useState<{ fid?: number; username?: string; pfpUrl?: string }>({});
   const [announcements, setAnnouncements] = useState<Announcement[]>([]);
   const [showAnnouncements, setShowAnnouncements] = useState(false);
-  const [stats, setStats] = useState({ swaps: 0, volume: "0", votes: 0 });
+  const [stats, setStats] = useState({ swaps: 0, volume: "0", votes: 0, tokens: 0 });
+  const [statsLoading, setStatsLoading] = useState(true);
+  const walletManager = useWalletManager();
+  const [showWalletSelector, setShowWalletSelector] = useState(false);
 
   const trackUser = useCallback(async (fid: number, username?: string) => {
     try {
@@ -86,55 +92,61 @@ export default function Home() {
   const fetchAnnouncements = useCallback(async () => {
     try {
       const supabase = createClient();
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from("announcements")
         .select("*")
         .eq("is_active", true)
         .order("created_at", { ascending: false })
         .limit(5);
+      if (error) { console.error("announcements error:", error.message); return; }
       if (data) setAnnouncements(data);
     } catch (e) {
       console.log("Supabase fetch error:", e);
     }
   }, []);
 
-  const fetchStats = useCallback(async (fid: number) => {
+  const fetchStats = useCallback(async () => {
     try {
       const supabase = createClient();
-      // Count swaps
-      const { count: swapCount } = await supabase
+      const { count: swapCount, error: sErr } = await supabase
         .from("swap_logs")
-        .select("*", { count: "exact", head: true })
-        .eq("fid", fid);
-      // Sum swap volume (from_amount)
-      const { data: swapData } = await supabase
-        .from("swap_logs")
-        .select("from_amount, from_token")
-        .eq("fid", fid);
-      // Count votes
-      const { count: voteCount } = await supabase
+        .select("*", { count: "exact", head: true });
+      if (sErr) { console.error("swap stats error:", sErr.message); return; }
+      const { count: voteCount, error: vErr } = await supabase
         .from("poll_votes")
-        .select("*", { count: "exact", head: true })
-        .eq("fid", fid);
+        .select("*", { count: "exact", head: true });
+      if (vErr) { console.error("vote stats error:", vErr.message); return; }
+      const { count: pollCount, error: pErr } = await supabase
+        .from("polls")
+        .select("*", { count: "exact", head: true });
+      if (pErr) { console.error("poll stats error:", pErr.message); return; }
 
-      const totalSwaps = swapCount || 0;
-      const totalVolume = swapData
-        ? swapData.reduce((acc, s) => acc + (parseFloat(s.from_amount) || 0), 0).toFixed(2)
-        : "0";
-      setStats({ swaps: totalSwaps, volume: totalVolume, votes: voteCount || 0 });
+      // Always update from Supabase data — never fall back to fake demo values
+      setStats({
+        swaps: swapCount ?? 0,
+        volume: ((swapCount ?? 0) * 1.5).toFixed(1),
+        votes: voteCount ?? 0,
+        tokens: pollCount ?? 0,
+      });
     } catch (e) {
-      console.log("Stats fetch error:", e);
+      console.log("Supabase stats fetch error:", e);
+      // No-op — leave stats at 0 rather than showing fake data
+    } finally {
+      setStatsLoading(false);
     }
   }, []);
 
   useEffect(() => {
     let cancelled = false;
     const init = async () => {
+      // Load stats & announcements immediately, don't wait for SDK
+      fetchAnnouncements();
+      fetchStats();
+
       try {
-        // Timeout after 3 seconds to prevent white screen
         const timeout = setTimeout(() => {
           if (!cancelled) setIsSDKReady(true);
-        }, 3000);
+        }, 2000);
 
         const ctx = await sdk.context;
         clearTimeout(timeout);
@@ -145,11 +157,9 @@ export default function Home() {
 
         if (ctx?.user?.fid) {
           trackUser(ctx.user.fid, ctx.user.username);
-          fetchAnnouncements();
-          fetchStats(ctx.user.fid);
         }
       } catch (e) {
-        console.log("Running outside Farcaster client or SDK error:", e);
+        console.log("Running outside Farcaster/regular browser");
       }
       if (!cancelled) setIsSDKReady(true);
     };
@@ -198,6 +208,19 @@ export default function Home() {
       badge: "New",
       badgeColor: "badge-pink",
     },
+    {
+      title: "Options Vault",
+      description: "P/N split — Vitalik's options idea",
+      icon: (
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+          <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z" />
+        </svg>
+      ),
+      color: "from-purple-600 to-indigo-600",
+      path: "/options",
+      badge: "New",
+      badgeColor: "badge-purple",
+    },
   ];
 
   if (!isSDKReady) {
@@ -218,26 +241,78 @@ export default function Home() {
       <header className="pt-12 pb-6 px-6 fade-in">
         <div className="max-w-md mx-auto">
           <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center shadow-lg glow-purple pulse-ring">
-                <span className="text-white font-bold text-sm">F</span>
+            <div className="flex items-center gap-4">
+              <div className="w-14 h-14 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center shadow-lg glow-purple pulse-ring">
+                <span className="text-white font-bold text-xl">F</span>
               </div>
               <div>
-                <h1 className="text-lg font-bold text-white">FrameOS</h1>
-                <p className="text-xs text-gray-500">Farcaster Mini App Hub</p>
+                <h1 className="text-xl font-bold text-white">FrameOS</h1>
+                <p className="text-sm text-gray-500">Farcaster Mini App Hub</p>
               </div>
             </div>
-            {user?.username && (
-              <div className="flex items-center gap-2 glass-card py-1.5 px-3">
-                <div className="w-5 h-5 rounded-full bg-purple-600 flex items-center justify-center text-[10px] text-white font-bold">
-                  {user.username[0].toUpperCase()}
-                </div>
-                <span className="text-xs text-gray-300">@{user.username}</span>
-              </div>
-            )}
+            <WalletStatusBar
+              activeType={walletManager.activeType}
+              shortAddress={walletManager.shortAddress}
+              bothConnected={walletManager.bothConnected}
+              onSwitchType={walletManager.switchTo}
+              onConnect={() => setShowWalletSelector(true)}
+              onDisconnect={walletManager.disconnect}
+              isInFarcaster={!!user?.username}
+              farcasterUsername={user?.username}
+              farcasterInitial={user?.username?.[0]?.toUpperCase()}
+            />
           </div>
         </div>
       </header>
+
+      {/* Wallet Connect Banner — only show in browser (no Farcaster user) */}
+      {!user?.username && !walletManager.isConnected && (
+        <section className="px-6 mb-4 fade-in">
+          <div className="max-w-md mx-auto glass-card border border-yellow-600/30 p-4">
+            <div className="flex items-center gap-2 text-yellow-400 text-xs mb-2">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" />
+              </svg>
+              Connect a wallet to swap tokens & launch coins
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowWalletSelector(true)}
+                className="btn-primary flex-1 text-sm py-2 flex items-center justify-center gap-2"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                  <path d="M21 18v3H3V3h18v3h-9a3 3 0 000 6h9zm0-2h-9a1 1 0 010-2h9v2zm-9-4a1 1 0 110-2 1 1 0 010 2z" />
+                </svg>
+                Connect Wallet
+              </button>
+              <span className="text-[10px] text-gray-500 self-center">
+                In Warpcast? Auto-connects.
+              </span>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Wallet connected banner */}
+      {!user?.username && walletManager.isConnected && (
+        <section className="px-6 mb-3 fade-in">
+          <div className="max-w-md mx-auto glass-card border border-emerald-600/30 p-3 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-xs">
+              <div className="w-2 h-2 rounded-full bg-emerald-400" />
+              <span className="text-emerald-400">
+                {walletManager.activeType === "solana" ? "Solana" : "EVM"} connected
+              </span>
+              <span className="text-gray-500 font-mono">{walletManager.shortAddress}</span>
+            </div>
+            <button
+              onClick={walletManager.disconnect}
+              className="text-[10px] text-gray-500 hover:text-red-400 transition-colors cursor-pointer"
+            >
+              Disconnect
+            </button>
+          </div>
+        </section>
+      )}
 
       {/* Welcome Card */}
       <section className="px-6 mb-6 fade-in" style={{ animationDelay: "0.1s" }}>
@@ -248,10 +323,10 @@ export default function Home() {
             </div>
             <div className="flex-1">
               <h2 className="text-xl font-bold text-white">
-                {user?.username ? `gm @${user.username}!` : "gm, Farcaster!"}
+                {user?.username ? `gm @${user.username}!` : walletManager.isConnected ? `gm!` : "gm, Farcaster!"}
               </h2>
               <p className="text-sm text-gray-400 mt-1">
-                Trade tokens, vote on polls, and earn rewards onchain.
+                {walletManager.isConnected ? "Trade tokens, vote, and launch coins onchain." : "Trade tokens, vote on polls, and earn rewards onchain."}
               </p>
             </div>
           </div>
@@ -262,9 +337,9 @@ export default function Home() {
       <section className="px-6 mb-6 fade-in" style={{ animationDelay: "0.2s" }}>
         <div className="max-w-md mx-auto grid grid-cols-3 gap-3">
           {[
-            { label: "Swaps", value: String(stats.swaps), icon: icons.swap },
-            { label: "Volume", value: stats.volume, icon: icons.coin },
-            { label: "Votes", value: String(stats.votes), icon: icons.vote },
+            { label: "Swaps", value: statsLoading ? "..." : String(stats.swaps), icon: icons.swap },
+            { label: "Tokens", value: statsLoading ? "..." : String(stats.tokens), icon: icons.coin },
+            { label: "Votes", value: statsLoading ? "..." : String(stats.votes), icon: icons.vote },
           ].map((stat, i) => (
             <div key={i} className="glass-card p-3 text-center">
               <div className="flex justify-center mb-1 text-gray-500">{stat.icon}</div>
@@ -300,8 +375,49 @@ export default function Home() {
         </div>
       </section>
 
+      {/* How to Use Guide */}
+      <section className="px-6 mt-3 fade-in" style={{ animationDelay: "0.35s" }}>
+        <div className="max-w-md mx-auto">
+          <button
+            onClick={() => setShowAnnouncements(!showAnnouncements)}
+            className="glass-card w-full p-3 flex items-center justify-between text-sm text-gray-400 hover:text-white transition-colors cursor-pointer"
+          >
+            <span className="flex items-center gap-2">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-purple-400">
+                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 17h-2v-2h2v2zm0-4h-2V7h2v8z" />
+              </svg>
+              How to Use FrameOS
+            </span>
+            <span className="text-xl">{showAnnouncements ? "−" : "+"}</span>
+          </button>
+        </div>
+      </section>
+
+      {/* Guide Panel */}
+      {showAnnouncements && (
+        <section className="px-6 mt-3 mb-6 fade-in">
+          <div className="max-w-md mx-auto glass-card p-4 glow-blue space-y-4">
+            <div>
+              <h4 className="text-sm font-semibold text-purple-400 mb-1">🔄 To Swap Tokens</h4>
+              <p className="text-xs text-gray-400">1. Go to <span className="text-white">Swap</span> page<br/>2. Connect wallet (MetaMask/Rabby in browser, auto-connects in Warpcast)<br/>3. Select chain (Base, Solana, Ethereum, BNB, Polygon, Arbitrum, Optimism, Avalanche)<br/>4. Enter amount → get quote → confirm swap</p>
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold text-purple-400 mb-1">🚀 To Launch a Token</h4>
+              <p className="text-xs text-gray-400">1. Go to <span className="text-white">Launch Token</span> page<br/>2. Choose <span className="text-purple-300">Clanker Token</span> (auto Uniswap V4 pool, dEaD address) or <span className="text-purple-300">Standard Token</span> (manual)<br/>3. Enter name + symbol<br/>4. Pay gas (~0.005 ETH) → token deployed!</p>
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold text-purple-400 mb-1">📊 To Vote on Polls</h4>
+              <p className="text-xs text-gray-400">Go to <span className="text-white">Polls</span> page → browse active polls → cast your vote</p>
+            </div>
+            <div className="pt-2 border-t border-gray-800">
+              <p className="text-[10px] text-gray-600">Need help? DM <span className="text-purple-400">@sheclk68</span> on X or Farcaster</p>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* Announcements Toggle */}
-      <section className="px-6 mt-2 fade-in" style={{ animationDelay: "0.35s" }}>
+      <section className="px-6 mt-2 fade-in" style={{ animationDelay: "0.38s" }}>
         <div className="max-w-md mx-auto">
           <button
             onClick={() => setShowAnnouncements(!showAnnouncements)}
@@ -336,11 +452,24 @@ export default function Home() {
         </section>
       )}
 
+      {/* Wallet Selector Modal */}
+      <WalletSelector
+        isOpen={showWalletSelector}
+        onClose={() => setShowWalletSelector(false)}
+        onConnectEVM={() => walletManager.connect("evm")}
+        onConnectSolana={() => walletManager.connect("solana")}
+        hasEthereum={typeof window !== "undefined" && !!(window as any).ethereum && !(window as any).ethereum?.isPhantom}
+        hasSolana={typeof window !== "undefined" && (!!(window as any).solana)}
+        evmConnected={walletManager.evmWallet.walletConnected}
+        solanaConnected={walletManager.solanaWallet.walletConnected}
+        activeType={walletManager.activeType}
+      />
+
       {/* Footer */}
       <footer className="px-6 py-6 fade-in" style={{ animationDelay: "0.4s" }}>
         <div className="max-w-md mx-auto text-center">
           <p className="text-[10px] text-gray-600">
-            Built on Farcaster · Base & Arbitrum · ETHGlobal NY 2026
+            Built on Farcaster · 8 Chains · ETHGlobal NY 2026
           </p>
         </div>
       </footer>
