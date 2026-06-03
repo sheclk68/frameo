@@ -94,8 +94,8 @@ export function useSolanaWallet() {
       }));
     };
 
-    // Check if already connected
-    if (provider.publicKey && provider.isConnected) {
+    // Check if already connected — publicKey alone is enough (Phantom persists authorized origins)
+    if (provider.publicKey) {
       setState({
         provider,
         connection: conn,

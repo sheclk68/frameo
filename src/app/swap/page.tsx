@@ -106,6 +106,19 @@ export default function SwapPage() {
     walletManager.ensureWalletForChain(chainKey);
   }, [chainKey]);
 
+  // Auto-select correct chain on mount based on which wallet is connected.
+  // Waits for both wallets to report isReady before making a decision.
+  useEffect(() => {
+    if (!solanaWallet.isReady || !walletManager.evmWallet.isReady) return;
+
+    const onlySolana = solanaWallet.walletConnected && !walletManager.evmWallet.walletConnected;
+    const onlyEvm = walletManager.evmWallet.walletConnected && !solanaWallet.walletConnected;
+    if (onlySolana) {
+      setChainKey("solana");
+    }
+    // If both or neither is connected, keep "base" default
+  }, [solanaWallet.isReady, walletManager.evmWallet.isReady]);
+
   // If in Farcaster and chainKey is Solana, fall back to Base
   useEffect(() => {
     if (isInFarcaster && isSolana) {
@@ -240,11 +253,18 @@ export default function SwapPage() {
       setStep("swapping");
       setMessage("");
 
+      // Guard: can't execute swap with a fallback/estimated quote
+      if (solanaQuote.isFallback) {
+        setMessage("Jupiter API unavailable — cannot execute swap. Try again later.");
+        setMessageType("error");
+        setStep("idle");
+        return;
+      }
+
       try {
         // 1. Get full quote response from Jupiter
-        const jupiterQuote = await (
-          await import("@/lib/swap-solana")
-        ).getJupiterQuote({
+        const { getJupiterQuote: jq } = await import("@/lib/swap-solana");
+        const jupiterQuote = await jq({
           inputMint: solanaQuote.inputMint,
           outputMint: solanaQuote.outputMint,
           amount: parseInt(solanaQuote.inAmount),
@@ -696,7 +716,8 @@ export default function SwapPage() {
               step === "quoting" ||
               !fromAmount ||
               (!quote && !solanaQuote) ||
-              !walletOk
+              !walletOk ||
+              !!solanaQuote?.isFallback
             }
             className="btn-primary w-full text-base py-3 flex items-center justify-center gap-2"
           >
@@ -731,13 +752,22 @@ export default function SwapPage() {
           {/* Swap details */}
           {(quote || solanaQuote) && step !== "swapping" && (
             <div className="mt-3 space-y-1">
+              {/* Fallback warning */}
+              {solanaQuote?.isFallback && (
+                <div className="flex items-center gap-1.5 text-[10px] text-yellow-400 bg-yellow-400/10 p-2 rounded-lg mb-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-3.5 h-3.5 flex-shrink-0">
+                    <path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z" />
+                  </svg>
+                  <span>Estimated price — Jupiter API unreachable. Swap button disabled.</span>
+                </div>
+              )}
               <div className="flex items-center justify-between text-xs text-gray-500">
                 <span>Rate</span>
                 <span>
                   {quote ? (
                     <>1 {fromToken.symbol} ≈ {quotePrice} {toToken.symbol}</>
                   ) : (
-                    <>via Jupiter • {solanaQuote?.routeSummary ?? ""}</>
+                    <>{solanaQuote?.isFallback ? solanaQuote.routeSummary : `via Jupiter • ${solanaQuote?.routeSummary ?? ""}`}</>
                   )}
                 </span>
               </div>
@@ -745,14 +775,18 @@ export default function SwapPage() {
                 <span>Slippage</span>
                 <span>{quoteSlippageBps / 100}%</span>
               </div>
-              <div className="flex items-center justify-between text-xs text-gray-500">
-                <span>FrameOS Fee</span>
-                <span className="text-purple-400">{(parseFloat(quoteBuyAmount || "0") * 0.003).toFixed(6)} {toToken.symbol} (0.3%)</span>
-              </div>
-              <div className="flex items-center justify-between text-xs text-gray-500">
-                <span>Network fee</span>
-                <span>{quote ? `~${(Number(quote.gas) * Number(quote.gasPrice) / 1e18).toFixed(6)} ETH` : isSolana ? "~0.000005 SOL" : ""}</span>
-              </div>
+              {!solanaQuote?.isFallback && (
+                <>
+                  <div className="flex items-center justify-between text-xs text-gray-500">
+                    <span>FrameOS Fee</span>
+                    <span className="text-purple-400">{(parseFloat(quoteBuyAmount || "0") * 0.003).toFixed(6)} {toToken.symbol} (0.3%)</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs text-gray-500">
+                    <span>Network fee</span>
+                    <span>{quote ? `~${(Number(quote.gas) * Number(quote.gasPrice) / 1e18).toFixed(6)} ETH` : "~0.000005 SOL"}</span>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
