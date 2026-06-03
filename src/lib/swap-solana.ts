@@ -5,7 +5,7 @@ import {
   VersionedTransaction,
 } from "@solana/web3.js";
 
-const JUPITER_SWAP_API_URL = "/api/jupiter-swap";     // local proxy for POST (avoids CORS)
+const JUPITER_SWAP_API_URL = "https://quote-api.jup.ag/v6/swap"; // direct — falls back gracefully
 
 // ===== Solana Fallback Pricing =====
 
@@ -144,12 +144,12 @@ export interface SolanaSwapQuote {
 
 /**
  * Fetch a swap quote from Jupiter v6 API
- * Uses local proxy to avoid CORS issues from browser
+ * Uses local Next.js proxy to avoid CORS issues
  */
 export async function getJupiterQuote(
   params: JupiterQuoteParams
 ): Promise<JupiterQuoteResponse> {
-  const url = new URL(`${window.location.origin}/api/jupiter-quote`);
+  const url = new URL("/api/jupiter-quote", window.location.origin);
   url.searchParams.set("inputMint", params.inputMint);
   url.searchParams.set("outputMint", params.outputMint);
   url.searchParams.set("amount", String(params.amount));

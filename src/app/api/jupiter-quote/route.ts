@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
-export const runtime = "edge";
+// Node.js runtime — Edge Runtime's fetch has issues in some environments
+export const runtime = "nodejs";
 
 /**
  * Proxy for Jupiter v6 quote API — avoids CORS issues from browser
@@ -29,11 +30,15 @@ export async function GET(request: NextRequest) {
     url.searchParams.set("slippageBps", slippageBps);
     url.searchParams.set("swapMode", swapMode);
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+
     const res = await fetch(url.toString(), {
-      headers: {
-        Accept: "application/json",
-      },
+      signal: controller.signal,
+      headers: { Accept: "application/json" },
     });
+
+    clearTimeout(timeout);
 
     if (!res.ok) {
       const text = await res.text();

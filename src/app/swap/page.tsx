@@ -28,7 +28,6 @@ import {
 } from "@/lib/swap-solana";
 import { type Address, type Hash } from "viem";
 import WalletSelector from "@/components/wallet-selector";
-import SwapErrorBoundary from "@/components/swap-error-boundary";
 
 // Icons
 const icons = {
@@ -450,7 +449,6 @@ export default function SwapPage() {
     : (wallet.chainId === 8453 || wallet.chainId === 42161);
 
   return (
-    <SwapErrorBoundary>
     <main className="flex min-h-screen flex-col bg-fc-gradient">
       {/* Header */}
       <header className="pt-12 pb-4 px-6 fade-in">
@@ -943,6 +941,5 @@ export default function SwapPage() {
         activeType={walletManager.activeType}
       />
     </main>
-    </SwapErrorBoundary>
   );
 }
